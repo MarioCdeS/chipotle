@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+
+# Cargo
+Cargo.lock
+
+# IntelliJ Project Files
+.idea/
+chipotle.iml

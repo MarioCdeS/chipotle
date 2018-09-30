@@ -1,0 +1,8 @@
+[package]
+name = "chipotle"
+version = "0.1.0"
+authors = ["Mario Carlos de Sousa <desousa.mc@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+stdweb = "0.4.9"
