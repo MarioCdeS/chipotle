@@ -1,4 +1,4 @@
-#[macro_use]
+extern crate rand;
 extern crate stdweb;
 
 use std::cell::RefCell;
@@ -17,6 +17,10 @@ macro_rules! regy {
     ($x:expr) => (((($x) & 0x00F0) >> 4) as usize);
 }
 
+macro_rules! imm4 {
+    ($x:expr) => ((($x) & 0x000F) as u8);
+}
+
 macro_rules! imm8 {
     ($x:expr) => ((($x) & 0x00FF) as u8);
 }
@@ -25,12 +29,17 @@ macro_rules! imm12 {
     ($x:expr) => (((($x) & 0x0FFF) >> 8) as u16);
 }
 
+macro_rules! panic_unknown {
+    ($x:expr) => (panic!(format!("Unknown instruction: {:x}", ($x))));
+}
+
 const INSTR_SIZE: u16 = 2;
 const NUM_GEN_REGS: usize = 16;
 const STACK_SIZE: u8 = 17;
 const RAM_SIZE: usize = 4096;
 const DISP_WIDTH: usize = 64;
 const DISP_HEIGHT: usize = 32;
+const VRAM_SIZE: usize = DISP_WIDTH as usize * DISP_HEIGHT as usize / 8;
 
 pub struct Emulator {
     canvas: CanvasElement,
@@ -45,7 +54,7 @@ pub struct Emulator {
     sp: u8,
     stack: [u16; STACK_SIZE as usize],
     ram: [u8; RAM_SIZE],
-    vram: [bool; DISP_WIDTH * DISP_HEIGHT],
+    vram: [u8; VRAM_SIZE],
     rom: Vec<u8>,
 }
 
@@ -66,7 +75,7 @@ impl Emulator {
             sp: 0,
             stack: [0; STACK_SIZE as usize],
             ram: [0; RAM_SIZE],
-            vram: [false; DISP_WIDTH * DISP_HEIGHT],
+            vram: [0; VRAM_SIZE],
             rom: Vec::new(),
         }));
 
@@ -95,7 +104,7 @@ impl Emulator {
 
     fn emulation_loop(emulator: Rc<RefCell<Emulator>>) {
         emulator.borrow_mut().step();
-        
+
         web::window().request_animation_frame({
             let emulator = Rc::clone(&emulator);
 
@@ -128,9 +137,22 @@ impl Emulator {
                 0x0000 => self.load_reg_from_reg(regx!(instruction), regy!(instruction)),
                 0x0001 => self.set_reg_or_reg(regx!(instruction), regy!(instruction)),
                 0x0002 => self.set_reg_and_reg(regx!(instruction), regy!(instruction)),
-                _ => panic!(format!("Unknown instruction: {:x}", instruction)),
+                0x0003 => self.set_reg_xor_reg(regx!(instruction), regy!(instruction)),
+                0x0004 => self.add_reg_and_reg(regx!(instruction), regy!(instruction)),
+                0x0005 => self.sub_reg_from_reg(regx!(instruction), regy!(instruction)),
+                0x0006 => self.shr_reg(regx!(instruction)),
+                0x0007 => self.subn_reg_from_reg(regx!(instruction), regy!(instruction)),
+                0x000E => self.shl_reg(regx!(instruction)),
+                _ => panic_unknown!(instruction),
             },
-            _ => panic!(format!("Unknown instruction: {:x}", instruction)),
+            0x9000 => self.skip_reg_neq_reg(regx!(instruction), regy!(instruction)),
+            0xA000 => self.load_regi_from_imm(imm12!(instruction)),
+            0xB000 => self.jump_reg0_plus_imm(imm12!(instruction)),
+            0xC000 => self.set_reg_rand_and_imm(regx!(instruction), imm8!(instruction)),
+            0xD000 => self.display_sprite(
+                regx!(instruction), regy!(instruction), imm4!(instruction),
+            ),
+            _ => panic_unknown!(instruction),
         };
     }
 
@@ -140,7 +162,7 @@ impl Emulator {
 
     fn clear_vram(&mut self) {
         for i in self.vram.iter_mut() {
-            *i = false;
+            *i = 0;
         }
     }
 
@@ -200,5 +222,80 @@ impl Emulator {
 
     fn set_reg_and_reg(&mut self, reg_x_idx: usize, reg_y_idx: usize) {
         self.regs[reg_x_idx] &= self.regs[reg_y_idx];
+    }
+
+    fn set_reg_xor_reg(&mut self, reg_x_idx: usize, reg_y_idx: usize) {
+        self.regs[reg_x_idx] ^= self.regs[reg_y_idx];
+    }
+
+    fn add_reg_and_reg(&mut self, reg_x_idx: usize, reg_y_idx: usize) {
+        let (sum, overflow) = self.regs[reg_x_idx].overflowing_add(self.regs[reg_y_idx]);
+        self.regs[reg_x_idx] = sum;
+        self.regs[0xF] = if overflow { 1 } else { 0 };
+    }
+
+    fn sub_reg_from_reg(&mut self, reg_x_idx: usize, reg_y_idx: usize) {
+        let (diff, overflow) = self.regs[reg_x_idx].overflowing_sub(self.regs[reg_y_idx]);
+        self.regs[reg_x_idx] = diff;
+        self.regs[0xF] = if overflow { 0 } else { 1 };
+    }
+
+    fn shr_reg(&mut self, reg_idx: usize) {
+        self.regs[0xF] = self.regs[reg_idx] & 0b00000001;
+        self.regs[reg_idx] >>= 1;
+    }
+
+    fn subn_reg_from_reg(&mut self, reg_x_idx: usize, reg_y_idx: usize) {
+        let (diff, overflow) = self.regs[reg_y_idx].overflowing_sub(self.regs[reg_x_idx]);
+        self.regs[reg_x_idx] = diff;
+        self.regs[0xF] = if overflow { 0 } else { 1 };
+    }
+
+    fn shl_reg(&mut self, reg_idx: usize) {
+        self.regs[0xF] = self.regs[reg_idx] & 0b00000001;
+        self.regs[reg_idx] <<= 1;
+    }
+
+    fn skip_reg_neq_reg(&mut self, reg_x_idx: usize, reg_y_idx: usize) {
+        if self.regs[reg_x_idx] != self.regs[reg_y_idx] {
+            self.pc += INSTR_SIZE;
+        }
+    }
+
+    fn load_regi_from_imm(&mut self, immediate: u16) {
+        self.reg_i = immediate;
+    }
+
+    fn jump_reg0_plus_imm(&mut self, immediate: u16) {
+        self.pc = self.regs[0] as u16 + immediate;
+    }
+
+    fn set_reg_rand_and_imm(&mut self, reg_idx: usize, immediate: u8) {
+        self.regs[reg_idx] = rand::random::<u8>() & immediate;
+    }
+
+    fn display_sprite(&mut self, reg_x_idx: usize, reg_y_idx: usize, num_bytes: u8) {
+        let sprite = &self.ram[self.reg_i as usize..self.reg_i as usize + num_bytes as usize];
+        let x = self.regs[reg_x_idx] / 8;
+        let y = self.regs[reg_y_idx];
+        let bit_offset = self.regs[reg_x_idx] % 8;
+        let mut bit_erased = false;
+
+        for (i, byte) in sprite.iter().enumerate() {
+            let left = (byte & (0xFF << bit_offset)) >> bit_offset;
+            let right = (byte & (0xFF >> (8 - bit_offset))) << (8 - bit_offset);
+
+            let mut addr =
+                (x as usize % DISP_WIDTH) + ((y as usize + i) % DISP_HEIGHT) * DISP_HEIGHT;
+
+            bit_erased |= self.vram[addr] & left > 0;
+            self.vram[addr] ^= left;
+
+            addr = ((x as usize + 1) % DISP_WIDTH) + ((y as usize + i) % DISP_HEIGHT) * DISP_HEIGHT;
+            bit_erased |= self.vram[addr] & right > 0;
+            self.vram[addr] ^= right;
+        }
+
+        self.regs[0xF] = if bit_erased { 1 } else { 0 };
     }
 }
