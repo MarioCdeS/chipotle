@@ -29,9 +29,45 @@ impl Emulator {
             test: "red",
         }));
 
-        setup_input(&emulator);
+        Emulator::setup_input(&emulator);
 
         emulator
+    }
+
+    pub fn start(emulator: &Rc<RefCell<Emulator>>) {
+        Emulator::emulator_step(Rc::clone(emulator));
+    }
+
+    fn setup_input(emulator: &Rc<RefCell<Emulator>>) {
+        web::window().add_event_listener({
+            let emulator = Rc::clone(emulator);
+
+            move |event: KeyDownEvent| {
+                if emulator.borrow_mut().key_down(&event.key()) {
+                    event.prevent_default();
+                }
+            }
+        });
+    }
+
+    fn emulator_step(emulator: Rc<RefCell<Emulator>>) {
+        web::window().request_animation_frame({
+            let emulator = Rc::clone(&emulator);
+
+            move |_| {
+                Emulator::emulator_step(emulator);
+            }
+        });
+
+        let emulator = emulator.borrow();
+
+        emulator.ctx2d.set_fill_style_color(emulator.test);
+        emulator.ctx2d.fill_rect(
+            0.0,
+            0.0,
+            emulator.canvas.width() as f64,
+            emulator.canvas.height() as f64,
+        );
     }
 
     fn key_down(&mut self, key: &str) -> bool {
@@ -48,40 +84,4 @@ impl Emulator {
             false
         }
     }
-}
-
-pub fn start(emulator: &Rc<RefCell<Emulator>>) {
-    emulator_step(Rc::clone(emulator));
-}
-
-fn setup_input(emulator: &Rc<RefCell<Emulator>>) {
-    web::window().add_event_listener({
-        let emulator = Rc::clone(emulator);
-
-        move |event: KeyDownEvent| {
-            if emulator.borrow_mut().key_down(&event.key()) {
-                event.prevent_default();
-            }
-        }
-    });
-}
-
-fn emulator_step(emulator: Rc<RefCell<Emulator>>) {
-    web::window().request_animation_frame({
-        let emulator = Rc::clone(&emulator);
-
-        move |_| {
-            emulator_step(emulator);
-        }
-    });
-
-    let emulator = emulator.borrow();
-
-    emulator.ctx2d.set_fill_style_color(emulator.test);
-    emulator.ctx2d.fill_rect(
-        0.0,
-        0.0,
-        emulator.canvas.width() as f64,
-        emulator.canvas.height() as f64,
-    );
 }

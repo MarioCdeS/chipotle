@@ -19,7 +19,7 @@ fn main() {
         .unwrap();
 
     let emulator = Emulator::new(canvas);
-    chipotle::start(&emulator);
+    Emulator::start(&emulator);
 
     stdweb::event_loop();
 }
