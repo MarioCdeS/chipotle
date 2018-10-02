@@ -40,6 +40,13 @@ const RAM_SIZE: usize = 4096;
 const DISP_WIDTH: usize = 64;
 const DISP_HEIGHT: usize = 32;
 const VRAM_SIZE: usize = DISP_WIDTH as usize * DISP_HEIGHT as usize / 8;
+const NUM_KEYS: usize = 16;
+
+enum State {
+    Halted,
+    Running,
+    BlockTillKeyPressed(usize),
+}
 
 pub struct Emulator {
     canvas: CanvasElement,
@@ -56,6 +63,8 @@ pub struct Emulator {
     ram: [u8; RAM_SIZE],
     vram: [u8; VRAM_SIZE],
     rom: Vec<u8>,
+    keys: [bool; NUM_KEYS],
+    state: State,
 }
 
 impl Emulator {
@@ -77,6 +86,8 @@ impl Emulator {
             ram: [0; RAM_SIZE],
             vram: [0; VRAM_SIZE],
             rom: Vec::new(),
+            keys: [false; NUM_KEYS],
+            state: State::Halted,
         }));
 
         Emulator::setup_input(&emulator);
@@ -86,6 +97,7 @@ impl Emulator {
 
     pub fn start(emulator: &Rc<RefCell<Emulator>>) {
         if emulator.borrow().rom_loaded {
+            emulator.borrow_mut().state = State::Running;
             Emulator::emulation_loop(Rc::clone(emulator));
         }
     }
@@ -102,6 +114,10 @@ impl Emulator {
         });
     }
 
+    fn key_down(&mut self, key: &str) -> bool {
+        false
+    }
+
     fn emulation_loop(emulator: Rc<RefCell<Emulator>>) {
         emulator.borrow_mut().step();
 
@@ -115,6 +131,14 @@ impl Emulator {
     }
 
     fn step(&mut self) {
+        match self.state {
+            State::Running => self.fetch_decode_execute(),
+            State::BlockTillKeyPressed(reg_idx) => self.block_till_key_pressed(reg_idx),
+            _ => return,
+        }
+    }
+
+    fn fetch_decode_execute(&mut self) {
         let instruction =
             ((self.rom[self.pc as usize] as u16) << 8) | self.rom[(self.pc + 1) as usize] as u16;
 
@@ -152,12 +176,30 @@ impl Emulator {
             0xD000 => self.display_sprite(
                 regx!(instruction), regy!(instruction), imm4!(instruction),
             ),
+            0xE000 => match instruction & 0x00FF {
+                0x009E => self.skip_key_pressed(regx!(instruction)),
+                0x00A1 => self.skip_key_released(regx!(instruction)),
+                _ => panic_unknown!(instruction),
+            },
+            0xF000 => match instruction & 0x00FF {
+                0x0007 => self.set_reg_to_delay(regx!(instruction)),
+                0x000A => self.set_reg_to_key_pressed(regx!(instruction)),
+                _ => panic_unknown!(instruction),
+            },
             _ => panic_unknown!(instruction),
-        };
+        }
     }
 
-    fn key_down(&mut self, key: &str) -> bool {
-        false
+    fn block_till_key_pressed(&mut self, reg_idx: usize) {
+        let key = self.keys
+            .iter()
+            .enumerate()
+            .find(|(_, pressed)| **pressed);
+
+        if let Some((key, _)) = key {
+            self.regs[reg_idx] = key as u8;
+            self.state = State::Running;
+        }
     }
 
     fn clear_vram(&mut self) {
@@ -297,5 +339,26 @@ impl Emulator {
         }
 
         self.regs[0xF] = if bit_erased { 1 } else { 0 };
+    }
+
+    fn skip_key_pressed(&mut self, reg_idx: usize) {
+        if self.keys[self.regs[reg_idx] as usize] {
+            self.pc += INSTR_SIZE;
+        }
+    }
+
+    fn skip_key_released(&mut self, reg_idx: usize) {
+        if !self.keys[self.regs[reg_idx] as usize] {
+            self.pc += INSTR_SIZE;
+        }
+    }
+
+    fn set_reg_to_delay(&mut self, reg_idx: usize) {
+        self.regs[reg_idx] = self.reg_delay;
+    }
+
+    fn set_reg_to_key_pressed(&mut self, reg_idx: usize) {
+        self.state = State::BlockTillKeyPressed(reg_idx);
+        self.block_till_key_pressed(reg_idx);
     }
 }
