@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use stdweb::traits::*;
 use stdweb::web::{self, CanvasRenderingContext2d};
-use stdweb::web::event::KeyDownEvent;
+use stdweb::web::event::{KeyDownEvent, KeyUpEvent};
 use stdweb::web::html_element::CanvasElement;
 
 macro_rules! regx {
@@ -37,22 +37,29 @@ const INSTR_SIZE: u16 = 2;
 const NUM_GEN_REGS: usize = 16;
 const STACK_SIZE: u8 = 17;
 const RAM_SIZE: usize = 4096;
-const DISP_WIDTH: usize = 64;
-const DISP_HEIGHT: usize = 32;
-const VRAM_SIZE: usize = DISP_WIDTH as usize * DISP_HEIGHT as usize / 8;
+const SCREEN_WIDTH: usize = 64;
+const SCREEN_HEIGHT: usize = 32;
+const VRAM_SIZE: usize = SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize / 8;
 const NUM_KEYS: usize = 16;
+const DIGIT_SPRITE_SIZE: u16 = 5;
 
 enum State {
     Halted,
+    Paused,
     Running,
     BlockTillKeyPressed(usize),
+}
+
+enum KeyState {
+    Pressed,
+    Released,
 }
 
 pub struct Emulator {
     canvas: CanvasElement,
     ctx2d: CanvasRenderingContext2d,
+    pixel_rect: (f64, f64),
     rom_loaded: bool,
-    paused: bool,
     regs: [u8; NUM_GEN_REGS],
     reg_i: u16,
     reg_delay: u8,
@@ -70,12 +77,16 @@ pub struct Emulator {
 impl Emulator {
     pub fn new(canvas: CanvasElement) -> Rc<RefCell<Emulator>> {
         let ctx2d: CanvasRenderingContext2d = canvas.get_context().unwrap();
+        let pixel_rect = (
+            canvas.width() as f64 / SCREEN_WIDTH as f64,
+            canvas.height() as f64 / SCREEN_HEIGHT as f64
+        );
 
         let emulator = Rc::new(RefCell::new(Emulator {
             canvas,
             ctx2d,
+            pixel_rect,
             rom_loaded: false,
-            paused: false,
             regs: [0; NUM_GEN_REGS],
             reg_i: 0,
             reg_delay: 0,
@@ -91,6 +102,7 @@ impl Emulator {
         }));
 
         Emulator::setup_input(&emulator);
+        emulator.borrow_mut().load_digit_sprites();
 
         emulator
     }
@@ -107,15 +119,77 @@ impl Emulator {
             let emulator = Rc::clone(emulator);
 
             move |event: KeyDownEvent| {
-                if emulator.borrow_mut().key_down(&event.key()) {
+                if emulator.borrow_mut().update_key_state(&event.key(), KeyState::Pressed) {
+                    event.prevent_default();
+                }
+            }
+        });
+
+        web::window().add_event_listener({
+            let emulator = Rc::clone(emulator);
+
+            move |event: KeyUpEvent| {
+                if emulator.borrow_mut().update_key_state(&event.key(), KeyState::Released) {
                     event.prevent_default();
                 }
             }
         });
     }
 
-    fn key_down(&mut self, key: &str) -> bool {
-        false
+    fn load_digit_sprites(&mut self) {
+        let sprites = [
+            0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+            0x20, 0x60, 0x20, 0x20, 0x70, // 1
+            0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+            0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+            0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+            0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+            0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+            0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+            0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+            0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+            0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+            0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+            0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+            0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+            0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+            0xF0, 0x80, 0xF0, 0x80, 0x80, // F
+        ];
+
+        self.ram[..sprites.len()].clone_from_slice(&sprites);
+    }
+
+    fn update_key_state(&mut self, key: &str, state: KeyState) -> bool {
+        let key_idx = match key {
+            "7" => Some(1),
+            "8" => Some(2),
+            "9" => Some(3),
+            "0" => Some(12),
+            "u" => Some(4),
+            "i" => Some(5),
+            "o" => Some(6),
+            "p" => Some(13),
+            "j" => Some(7),
+            "k" => Some(8),
+            "l" => Some(9),
+            ";" => Some(14),
+            "m" => Some(10),
+            "," => Some(0),
+            "." => Some(11),
+            "/" => Some(15),
+            _ => None,
+        };
+
+        if let Some(key_idx) = key_idx {
+            self.keys[key_idx] = match state {
+                KeyState::Pressed => true,
+                KeyState::Released => false,
+            };
+
+            true
+        } else {
+            false
+        }
     }
 
     fn emulation_loop(emulator: Rc<RefCell<Emulator>>) {
@@ -131,8 +205,20 @@ impl Emulator {
     }
 
     fn step(&mut self) {
+        if self.reg_sound > 0 {
+            self.reg_sound -= 1;
+        }
+
+        if self.reg_delay > 0 {
+            self.reg_delay -= 1;
+            return;
+        }
+
         match self.state {
-            State::Running => self.fetch_decode_execute(),
+            State::Running => {
+                self.fetch_decode_execute();
+                self.draw_screen();
+            }
             State::BlockTillKeyPressed(reg_idx) => self.block_till_key_pressed(reg_idx),
             _ => return,
         }
@@ -184,6 +270,13 @@ impl Emulator {
             0xF000 => match instruction & 0x00FF {
                 0x0007 => self.set_reg_to_delay(regx!(instruction)),
                 0x000A => self.set_reg_to_key_pressed(regx!(instruction)),
+                0x0015 => self.set_delay_to_reg(regx!(instruction)),
+                0x0018 => self.set_sound_to_reg(regx!(instruction)),
+                0x001E => self.add_regi_and_reg(regx!(instruction)),
+                0x0029 => self.set_regi_to_digit_sprite(regx!(instruction)),
+                0x0033 => self.load_mem_from_reg_bcd(regx!(instruction)),
+                0x0055 => self.load_mem_from_regs(regx!(instruction)),
+                0x0065 => self.load_regs_from_mem(regx!(instruction)),
                 _ => panic_unknown!(instruction),
             },
             _ => panic_unknown!(instruction),
@@ -205,6 +298,24 @@ impl Emulator {
     fn clear_vram(&mut self) {
         for i in self.vram.iter_mut() {
             *i = 0;
+        }
+    }
+
+    fn draw_screen(&self) {
+        self.ctx2d.clear_rect(0.0, 0.0, self.canvas.width() as f64, self.canvas.height() as f64);
+        self.ctx2d.set_fill_style_color("white");
+
+        for (i, byte) in self.vram.iter().enumerate() {
+            for j in 0..8 {
+                if *byte & (1 << (7 - j)) == 0 {
+                    continue;
+                }
+
+                let x = ((i * 8 + j) % SCREEN_WIDTH) as f64 * self.pixel_rect.0;
+                let y = ((i * 8 + j) / SCREEN_WIDTH) as f64 * self.pixel_rect.1;
+
+                self.ctx2d.fill_rect(x, y, self.pixel_rect.0, self.pixel_rect.1);
+            }
         }
     }
 
@@ -328,12 +439,15 @@ impl Emulator {
             let right = (byte & (0xFF >> (8 - bit_offset))) << (8 - bit_offset);
 
             let mut addr =
-                (x as usize % DISP_WIDTH) + ((y as usize + i) % DISP_HEIGHT) * DISP_HEIGHT;
+                (x as usize % SCREEN_WIDTH) + ((y as usize + i) % SCREEN_HEIGHT) * SCREEN_HEIGHT;
 
             bit_erased |= self.vram[addr] & left > 0;
             self.vram[addr] ^= left;
 
-            addr = ((x as usize + 1) % DISP_WIDTH) + ((y as usize + i) % DISP_HEIGHT) * DISP_HEIGHT;
+            addr =
+                ((x as usize + 1) % SCREEN_WIDTH) + ((y as usize + i) % SCREEN_HEIGHT) *
+                    SCREEN_HEIGHT;
+
             bit_erased |= self.vram[addr] & right > 0;
             self.vram[addr] ^= right;
         }
@@ -360,5 +474,46 @@ impl Emulator {
     fn set_reg_to_key_pressed(&mut self, reg_idx: usize) {
         self.state = State::BlockTillKeyPressed(reg_idx);
         self.block_till_key_pressed(reg_idx);
+    }
+
+    fn set_delay_to_reg(&mut self, reg_idx: usize) {
+        self.reg_delay = self.regs[reg_idx];
+    }
+
+    fn set_sound_to_reg(&mut self, reg_idx: usize) {
+        self.reg_sound = self.regs[reg_idx];
+    }
+
+    fn add_regi_and_reg(&mut self, reg_idx: usize) {
+        self.reg_i += self.regs[reg_idx] as u16;
+    }
+
+    fn set_regi_to_digit_sprite(&mut self, reg_idx: usize) {
+        self.reg_i = self.regs[reg_idx] as u16 * DIGIT_SPRITE_SIZE;
+    }
+
+    fn load_mem_from_reg_bcd(&mut self, reg_idx: usize) {
+        let mut units = self.regs[reg_idx];
+
+        let hundreds = units / 100;
+        units %= 100;
+
+        let tens = units / 10;
+        units %= 10;
+
+        self.ram[self.reg_i as usize] = hundreds;
+        self.ram[self.reg_i as usize + 1] = tens;
+        self.ram[self.reg_i as usize + 2] = units;
+    }
+
+    fn load_mem_from_regs(&mut self, reg_idx: usize) {
+        self.ram[self.reg_i as usize..self.reg_i as usize + reg_idx]
+            .clone_from_slice(&self.regs[..reg_idx]);
+    }
+
+    fn load_regs_from_mem(&mut self, reg_idx: usize) {
+        self.regs[..reg_idx].clone_from_slice(
+            &self.ram[self.reg_i as usize..self.reg_i as usize + reg_idx]
+        );
     }
 }
