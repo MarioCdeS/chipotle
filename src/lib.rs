@@ -59,7 +59,6 @@ pub struct Emulator {
     canvas: CanvasElement,
     ctx2d: CanvasRenderingContext2d,
     pixel_rect: (f64, f64),
-    rom_loaded: bool,
     regs: [u8; NUM_GEN_REGS],
     reg_i: u16,
     reg_delay: u8,
@@ -69,7 +68,7 @@ pub struct Emulator {
     stack: [u16; STACK_SIZE as usize],
     ram: [u8; RAM_SIZE],
     vram: [u8; VRAM_SIZE],
-    rom: Vec<u8>,
+    rom: Option<Vec<u8>>,
     keys: [bool; NUM_KEYS],
     state: State,
 }
@@ -86,7 +85,6 @@ impl Emulator {
             canvas,
             ctx2d,
             pixel_rect,
-            rom_loaded: false,
             regs: [0; NUM_GEN_REGS],
             reg_i: 0,
             reg_delay: 0,
@@ -96,7 +94,7 @@ impl Emulator {
             stack: [0; STACK_SIZE as usize],
             ram: [0; RAM_SIZE],
             vram: [0; VRAM_SIZE],
-            rom: Vec::new(),
+            rom: None,
             keys: [false; NUM_KEYS],
             state: State::Halted,
         }));
@@ -107,10 +105,24 @@ impl Emulator {
         emulator
     }
 
+    pub fn load_rom(emulator: &Rc<RefCell<Emulator>>, rom: Vec<u8>) {
+        emulator.borrow_mut().rom = Some(rom);
+    }
+
     pub fn start(emulator: &Rc<RefCell<Emulator>>) {
-        if emulator.borrow().rom_loaded {
-            emulator.borrow_mut().state = State::Running;
-            Emulator::emulation_loop(Rc::clone(emulator));
+        emulator.borrow_mut().state = State::Running;
+        Emulator::emulation_loop(Rc::clone(emulator));
+    }
+
+    pub fn pause(emulator: &Rc<RefCell<Emulator>>) {
+        if let Emulator { state: ref mut state @ State::Running, .. } = *emulator.borrow_mut() {
+            *state = State::Paused;
+        }
+    }
+
+    pub fn resume(emulator: &Rc<RefCell<Emulator>>) {
+        if let Emulator { state: ref mut state @ State::Paused, .. } = *emulator.borrow_mut() {
+            *state = State::Running;
         }
     }
 
@@ -225,8 +237,11 @@ impl Emulator {
     }
 
     fn fetch_decode_execute(&mut self) {
-        let instruction =
-            ((self.rom[self.pc as usize] as u16) << 8) | self.rom[(self.pc + 1) as usize] as u16;
+        let instruction = match &self.rom {
+            Some(rom) =>
+                ((rom[self.pc as usize] as u16) << 8) | rom[(self.pc + 1) as usize] as u16,
+            None => return,
+        };
 
         self.pc += INSTR_SIZE;
 
