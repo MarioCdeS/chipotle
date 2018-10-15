@@ -244,10 +244,6 @@ impl Emulator {
         let instruction =
             ((self.ram[self.pc as usize] as u16) << 8) | self.ram[(self.pc + 1) as usize] as u16;
 
-        js! {
-            console.log("Decoding: " + @{format!("{:x}", instruction)} + " PC: " + @{self.pc});
-        }
-
         self.pc += INSTR_SIZE;
 
         match instruction & 0xF000 {
@@ -322,7 +318,9 @@ impl Emulator {
     }
 
     fn draw_screen(&self) {
-        self.ctx2d.clear_rect(0.0, 0.0, self.canvas.width() as f64, self.canvas.height() as f64);
+        self.ctx2d.set_fill_style_color("black");
+        self.ctx2d.fill_rect(0.0, 0.0, self.canvas.width() as f64, self.canvas.height() as f64);
+
         self.ctx2d.set_fill_style_color("white");
 
         for (i, byte) in self.vram.iter().enumerate() {
@@ -447,11 +445,11 @@ impl Emulator {
         self.regs[reg_idx] = js! {
             return Math.floor(Math.random() * @{u8::max_value() as f32 + 1.0});
         }.try_into().unwrap();
+
+        self.regs[reg_idx] &= immediate;
     }
 
     fn display_sprite(&mut self, reg_x_idx: usize, reg_y_idx: usize, num_bytes: u8) {
-        return; // WIP
-        
         let sprite = &self.ram[self.reg_i as usize..self.reg_i as usize + num_bytes as usize];
         let x = self.regs[reg_x_idx] / 8;
         let y = self.regs[reg_y_idx];
@@ -463,14 +461,14 @@ impl Emulator {
             let right = (byte & (0xFF >> (8 - bit_offset))) << (8 - bit_offset);
 
             let mut addr =
-                (x as usize % SCREEN_WIDTH) + ((y as usize + i) % SCREEN_HEIGHT) * SCREEN_HEIGHT;
+                (x as usize % SCREEN_WIDTH) + ((y as usize + i) % SCREEN_HEIGHT) * SCREEN_WIDTH / 8;
 
             bit_erased |= self.vram[addr] & left > 0;
             self.vram[addr] ^= left;
 
             addr =
                 ((x as usize + 1) % SCREEN_WIDTH) + ((y as usize + i) % SCREEN_HEIGHT) *
-                    SCREEN_HEIGHT;
+                    SCREEN_WIDTH / 8;
 
             bit_erased |= self.vram[addr] & right > 0;
             self.vram[addr] ^= right;
