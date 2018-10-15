@@ -1,10 +1,11 @@
-extern crate rand;
+#[macro_use]
 extern crate stdweb;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use stdweb::traits::*;
+use stdweb::unstable::TryInto;
 use stdweb::web::{self, CanvasRenderingContext2d};
 use stdweb::web::event::{KeyDownEvent, KeyUpEvent};
 use stdweb::web::html_element::CanvasElement;
@@ -26,20 +27,21 @@ macro_rules! imm8 {
 }
 
 macro_rules! imm12 {
-    ($x:expr) => (((($x) & 0x0FFF) >> 8) as u16);
+    ($x:expr) => ((($x) & 0x0FFF) as u16);
 }
 
 macro_rules! panic_unknown {
     ($x:expr) => (panic!(format!("Unknown instruction: {:x}", ($x))));
 }
 
+const SCREEN_WIDTH: usize = 64;
+const SCREEN_HEIGHT: usize = 32;
 const INSTR_SIZE: u16 = 2;
 const NUM_GEN_REGS: usize = 16;
 const STACK_SIZE: u8 = 17;
 const RAM_SIZE: usize = 4096;
-const SCREEN_WIDTH: usize = 64;
-const SCREEN_HEIGHT: usize = 32;
 const VRAM_SIZE: usize = SCREEN_WIDTH as usize * SCREEN_HEIGHT as usize / 8;
+const ROM_START: u16 = 512;
 const NUM_KEYS: usize = 16;
 const DIGIT_SPRITE_SIZE: u16 = 5;
 
@@ -68,8 +70,8 @@ pub struct Emulator {
     stack: [u16; STACK_SIZE as usize],
     ram: [u8; RAM_SIZE],
     vram: [u8; VRAM_SIZE],
-    rom: Option<Vec<u8>>,
     keys: [bool; NUM_KEYS],
+    rom_loaded: bool,
     state: State,
 }
 
@@ -89,13 +91,13 @@ impl Emulator {
             reg_i: 0,
             reg_delay: 0,
             reg_sound: 0,
-            pc: 0,
+            pc: ROM_START,
             sp: 0,
             stack: [0; STACK_SIZE as usize],
             ram: [0; RAM_SIZE],
             vram: [0; VRAM_SIZE],
-            rom: None,
             keys: [false; NUM_KEYS],
+            rom_loaded: false,
             state: State::Halted,
         }));
 
@@ -106,7 +108,9 @@ impl Emulator {
     }
 
     pub fn load_rom(emulator: &Rc<RefCell<Emulator>>, rom: Vec<u8>) {
-        emulator.borrow_mut().rom = Some(rom);
+        let mut emulator = emulator.borrow_mut();
+        emulator.ram[ROM_START as usize..ROM_START as usize + rom.len()].clone_from_slice(&rom);
+        emulator.rom_loaded = true;
     }
 
     pub fn start(emulator: &Rc<RefCell<Emulator>>) {
@@ -207,12 +211,8 @@ impl Emulator {
     fn emulation_loop(emulator: Rc<RefCell<Emulator>>) {
         emulator.borrow_mut().step();
 
-        web::window().request_animation_frame({
-            let emulator = Rc::clone(&emulator);
-
-            move |_| {
-                Emulator::emulation_loop(emulator);
-            }
+        web::window().request_animation_frame(move |_| {
+            Emulator::emulation_loop(emulator);
         });
     }
 
@@ -237,11 +237,16 @@ impl Emulator {
     }
 
     fn fetch_decode_execute(&mut self) {
-        let instruction = match &self.rom {
-            Some(rom) =>
-                ((rom[self.pc as usize] as u16) << 8) | rom[(self.pc + 1) as usize] as u16,
-            None => return,
-        };
+        if !self.rom_loaded {
+            return;
+        }
+
+        let instruction =
+            ((self.ram[self.pc as usize] as u16) << 8) | self.ram[(self.pc + 1) as usize] as u16;
+
+        js! {
+            console.log("Decoding: " + @{format!("{:x}", instruction)} + " PC: " + @{self.pc});
+        }
 
         self.pc += INSTR_SIZE;
 
@@ -439,10 +444,14 @@ impl Emulator {
     }
 
     fn set_reg_rand_and_imm(&mut self, reg_idx: usize, immediate: u8) {
-        self.regs[reg_idx] = rand::random::<u8>() & immediate;
+        self.regs[reg_idx] = js! {
+            return Math.floor(Math.random() * @{u8::max_value() as f32 + 1.0});
+        }.try_into().unwrap();
     }
 
     fn display_sprite(&mut self, reg_x_idx: usize, reg_y_idx: usize, num_bytes: u8) {
+        return; // WIP
+        
         let sprite = &self.ram[self.reg_i as usize..self.reg_i as usize + num_bytes as usize];
         let x = self.regs[reg_x_idx] / 8;
         let y = self.regs[reg_y_idx];

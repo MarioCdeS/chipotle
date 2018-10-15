@@ -7,3 +7,6 @@ Cargo.lock
 # IntelliJ Project Files
 .idea/
 chipotle.iml
+
+# Test ROM's
+roms/
